@@ -1,0 +1,21 @@
+{
+  "name": "first-step",
+  "private": true,
+  "version": "1.0.0",
+  "description": "First Step — a first-person cinematic Starship Mars mission experience built with Three.js",
+  "type": "module",
+  "scripts": {
+    "assets:index": "node scripts/build-asset-index.mjs",
+    "dev": "node scripts/build-asset-index.mjs && vite",
+    "build": "node scripts/build-asset-index.mjs && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "3d-tiles-renderer": "0.5.3",
+    "gsap": "3.15.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "vite": "8.3.4"
+  }
+}

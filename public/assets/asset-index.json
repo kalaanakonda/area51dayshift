@@ -1,0 +1,11 @@
+{
+  "generated": "2026-10-23T08:42:56.697Z",
+  "files": [
+    "models/people/pilot.glb",
+    "models/people/rb_security.glb",
+    "models/people/rb_soldier.glb",
+    "models/people/rb_soldier_f.glb",
+    "models/people/scientist.glb",
+    "models/people/technician.glb"
+  ]
+}
