@@ -78,6 +78,9 @@ export class Flight {
     this.justLanded = false;
     this.overdrive = false;
     this.gear = 4; // index into GEARS
+    // Dogfight tuning (the deathmatch): a flat top speed at any height instead of the
+    // altitude-scaled cruise. { vmax, vmaxV (m/s), boost (×), accel (1/s), machCap }
+    this.arcade = null;
   }
 
   setGear(i) {
@@ -158,11 +161,20 @@ export class Flight {
     // so going up stays a choice rather than a runaway: ~25 s to space boosted.
     // Overdrive drops the pretence of aerodynamics: Mach 2 at rooftop height,
     // Mach 10 at 1 km, tens of km/s up high, and it stops and turns on a dime.
-    const boost = 1 + I.boost * 2;
+    const A = this.arcade;
+    const boost = 1 + I.boost * (A ? A.boost - 1 : 2);
     const h = Math.max(0, this.agl);
     const G = GEARS[this.gear];
-    let vmax = od ? G.mach * 340 * boost : Math.min(15 + h * 0.25, h < 120e3 ? 7800 : 7800 + (h - 120e3) * 0.12) * G.cruise * boost;
-    let vmaxV = od ? Math.min(250 + h * 1.2, G.mach * 340 * 0.5) * boost : (10 + h * 0.1) * Math.max(1, G.cruise) * boost;
+    let vmax;
+    let vmaxV;
+    if (A) {
+      // Overdrive is a flat dash (no boost on top); otherwise jet speeds, boost for a sprint
+      vmax = od ? Math.min(G.mach, A.machCap) * 340 : A.vmax * boost;
+      vmaxV = od ? vmax * 0.5 : A.vmaxV * boost;
+    } else {
+      vmax = od ? G.mach * 340 * boost : Math.min(15 + h * 0.25, h < 120e3 ? 7800 : 7800 + (h - 120e3) * 0.12) * G.cruise * boost;
+      vmaxV = od ? Math.min(250 + h * 1.2, G.mach * 340 * 0.5) * boost : (10 + h * 0.1) * Math.max(1, G.cruise) * boost;
+    }
     if (this.inside) {
       vmax = Math.min(vmax, this.limitInside);
       vmaxV = Math.min(vmaxV, this.limitInside);
@@ -190,7 +202,7 @@ export class Flight {
     const wv = _want.dot(_U);
     if (Math.abs(wv) > vmaxV) _want.addScaledVector(_U, Math.sign(wv) * vmaxV - wv);
     const speeding = _want.lengthSq() > this.vel.lengthSq();
-    const accel = od ? (speeding ? 4.5 : 9) : speeding ? 1.25 : 1.9;
+    const accel = od ? (speeding ? 4.5 : 9) : A ? (speeding ? A.accel : A.accel * 1.4) : speeding ? 1.25 : 1.9;
     this.vel.lerp(_want, 1 - Math.exp(-accel * dt));
     // gentle vertical bob at hover
     const hover = Math.sin(performance.now() * 0.0011) * 0.06 * (this.agl < 40 ? 1 : 0);

@@ -42,12 +42,12 @@ export class Hud {
       <div class="toasts" data-toasts></div>
       <div class="attrib" data-attrib></div>
       <div class="overlay" data-overlay hidden>
-        <div class="classif">TOP SECRET // S-4 // ARV PROGRAM // TRAINING USE ONLY</div>
+        <div class="classif" data-classif>TOP SECRET // S-4 // ARV PROGRAM // TRAINING USE ONLY</div>
         <div class="ov">
-          <div class="kicker">Groom Lake, Nevada · Hangar 9 · <span data-ovclock></span></div>
+          <div class="kicker" data-kicker>Groom Lake, Nevada · Hangar 9 · <span data-ovclock></span></div>
           <h1 data-ovtitle>Day Shift</h1>
           <p class="lede" data-ovlede>Clock in, walk the hangar floor, take ARV-3 out through the door — then fly it anywhere on Earth.</p>
-          <div class="cards">
+          <div class="cards" data-cards>
             <div class="card">
               <h3>On foot</h3>
               <dl>
@@ -67,7 +67,7 @@ export class Hud {
                 <dt>A D</dt><dd>Slide left · right</dd>
                 <dt>Mouse</dt><dd>Fly the craft · turn and pitch the nose</dd>
                 <dt>Right drag</dt><dd>Look around (orbit in chase view)</dd>
-                <dt>V</dt><dd>Chase camera · see the ground below</dd>
+                <dt>V</dt><dd>Cockpit · third person · chase camera</dd>
                 <dt>Shift</dt><dd>Boost ×3</dd>
                 <dt>Q</dt><dd>Overdrive · hypersonic, no inertia</dd>
                 <dt>1–0 · − =</dt><dd>Speed gear · Overdrive up to Mach 150</dd>
@@ -82,10 +82,11 @@ export class Hud {
           <div class="actions">
             <button type="button" class="go" data-go>Clock in</button>
             <button type="button" class="mute" data-mute aria-pressed="false">Sound on</button>
+            <button type="button" class="mute alt" data-ovalt hidden></button>
           </div>
           <div class="loading" data-loading></div>
         </div>
-        <div class="classif">TOP SECRET // S-4 // ARV PROGRAM // TRAINING USE ONLY</div>
+        <div class="classif" data-classif>TOP SECRET // S-4 // ARV PROGRAM // TRAINING USE ONLY</div>
       </div>
     `;
     const q = (s) => root.querySelector(s);
@@ -115,6 +116,10 @@ export class Hud {
       earthdot: q('[data-earthdot]'),
       go: q('[data-go]'),
       mute: q('[data-mute]'),
+      ovalt: q('[data-ovalt]'),
+      kicker: q('[data-kicker]'),
+      cards: q('[data-cards]'),
+      classif: [...root.querySelectorAll('[data-classif]')],
       drivemode: q('[data-drivemode]'),
       mach: q('[data-mach]'),
       warpbox: q('[data-warpbox]'),
@@ -140,6 +145,24 @@ export class Hud {
       e.stopPropagation();
       if (this.onMute) this.onMute();
     });
+    this.el.ovalt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this._onAlt) this._onAlt();
+    });
+  }
+
+  /**
+   * Swap the start card's framing (the deathmatch has its own): kicker and
+   * cards are HTML, the rest text. Anything left out stays as it is.
+   */
+  setIntro({ classif, kicker, lede, cards }) {
+    if (classif) for (const c of this.el.classif) c.textContent = classif;
+    if (kicker) {
+      this.el.kicker.innerHTML = kicker;
+      this.el.ovclock = this.el.kicker.querySelector('[data-ovclock]') || document.createElement('span');
+    }
+    if (lede) this.el.ovlede.textContent = lede;
+    if (cards) this.el.cards.innerHTML = cards;
   }
 
   setMuted(m) {
@@ -156,12 +179,15 @@ export class Hud {
     this._set(this.el.attrib, text);
   }
 
-  /** Start / pause card. */
-  showOverlay({ title, lede, button, onGo }) {
+  /** Start / pause card. alt = { label, onClick } adds a second button. */
+  showOverlay({ title, lede, button, onGo, alt = null }) {
     this.el.ovtitle.textContent = title;
     if (lede) this.el.ovlede.textContent = lede;
     this.el.go.textContent = button;
     this._onGo = onGo;
+    this.el.ovalt.hidden = !alt;
+    this._onAlt = alt ? alt.onClick : null;
+    if (alt) this.el.ovalt.textContent = alt.label;
     this.el.overlay.hidden = false;
     this.root.classList.add('has-overlay');
   }

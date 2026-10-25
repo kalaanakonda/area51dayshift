@@ -7,6 +7,7 @@ import { Color, Vector2 } from 'three';
  *     smears radially, and the fringing grows (0 = off; the film never sets it)
  *     uLens (0..1): Overdrive glass — on the sides only, a flowing fbm warp, barrel
  *     distortion and strong colour fringing; the middle of the frame stays clean
+ *     uFisheye (0..~0.3): the flight camera's slight fisheye, corners pinned
  *  1. Subtle radial chromatic aberration (old anamorphic glass, very restrained)
  *  2. Lift / gamma / gain (ASC-CDL style), then contrast around a mid-grey pivot
  *  3. Saturation (the look is deliberately desaturated)
@@ -35,6 +36,7 @@ export const GradeShader = {
     uAberration: { value: 0.0025 },
     uFlow: { value: 0 },
     uLens: { value: 0 },
+    uFisheye: { value: 0 },
     uGrain: { value: 0.045 },
     uFlashColor: { value: new Color(1, 0.92, 0.82) },
     uFlash: { value: 0 },
@@ -56,7 +58,7 @@ export const GradeShader = {
     uniform vec3 uLift, uGamma, uGain;
     uniform float uContrast, uPivot, uSaturation;
     uniform vec3 uShadowTint, uHighlightTint;
-    uniform float uSplit, uVignette, uAberration, uFlow, uLens, uGrain;
+    uniform float uSplit, uVignette, uAberration, uFlow, uLens, uFisheye, uGrain;
     uniform vec3 uFlashColor;
     uniform float uFlash, uFade, uLetterbox, uTargetAspect;
     varying vec2 vUv;
@@ -98,6 +100,13 @@ export const GradeShader = {
     void main() {
       vec2 uv = vUv;
       float aspect = uResolution.x / uResolution.y;
+      if (uFisheye > 0.0005) {
+        // Fisheye (the flight camera): the middle magnified, the edges squeezed, the
+        // corners pinned (the camera renders a wider field to make up for the middle)
+        vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+        float rc2 = 0.25 * (aspect * aspect + 1.0);
+        uv = 0.5 + p * ((1.0 + uFisheye * dot(p, p)) / (1.0 + uFisheye * rc2)) / vec2(aspect, 1.0);
+      }
       vec2 lensDisp = vec2(0.0);
       if (uLens > 0.0005) {
         // Overdrive glass, sides only: the frame looks through a sheet of liquid

@@ -14,8 +14,11 @@ import { Warp } from './Warp.js';
  *
  * Parked, the mouse turns your head; flying, it flies the craft — X turns,
  * Y pitches the nose, your head stays locked to the seat (hold the right
- * mouse button to look around). V swaps the cockpit for a chase camera that
- * hangs behind and above the craft, so the ground is in view on the way down.
+ * mouse button to look around). V cycles the cockpit, a third-person camera
+ * over the craft's shoulder (looking where the nose points, so the crosshair
+ * is still your aim) and a chase camera that hangs behind and above, so the
+ * ground is in view on the way down. In flight the lens has a slight fisheye
+ * (applied in the grade; the render widens its field to match).
  * R spools the drive, Space lifts off, C (or Ctrl) settles it back down, F
  * climbs out. Q toggles Overdrive; the warp drive (J, or Engage on the nav
  * map) jumps to a picked destination.
@@ -34,6 +37,7 @@ const _X = new Vector3(1, 0, 0);
 const _Z = new Vector3(0, 0, 1);
 const _e = new Euler();
 const _qs = new Quaternion();
+const _up = new Vector3();
 const BASE_FOV = 66;
 const HEAD_REST = -0.12; // eyes a little down through the canopy while flying
 const CHASE_FOV = 60;
@@ -60,8 +64,13 @@ export class PilotMode {
     this.headYaw = 0;
     this.thrust = 0;
     this.leaving = false;
-    this.view = 'cockpit'; // | 'chase'
+    this.view = 'cockpit'; // | 'third' | 'chase'
     this.chase = { yaw: 0, pitch: 0, dist: 26 };
+    this.third = { dist: 22, height: 4.6, d: 22 };
+    this.fisheye = 0; // grade strength this frame (the owner feeds it to the grade pass)
+    this.headRest = HEAD_REST; // where the eyes settle while the mouse flies
+    this.wheel = 0; // this frame's wheel steps (for an owner that wants them, e.g. weapons)
+    this.wheelZoom = true; // the wheel zooms the outside cameras
     this.eye = new Vector3().copy(SAUCER.eye);
     this.headLag = new Vector3();
     this._lastVel = new Vector3();
@@ -84,17 +93,20 @@ export class PilotMode {
     this.ramp = this.saucer.ramp ?? 1;
   }
 
-  /** 'cockpit' (the near layer, saucer hidden from the world camera) or 'chase'. */
+  /** 'cockpit' (the near layer, saucer hidden from the world camera), 'third' or 'chase'. */
   setView(v) {
     this.view = v;
-    if (v === 'chase') this.worldCam.layers.enable(Saucer.LAYER);
-    else this.worldCam.layers.disable(Saucer.LAYER);
+    if (v === 'cockpit') this.worldCam.layers.disable(Saucer.LAYER);
+    else this.worldCam.layers.enable(Saucer.LAYER);
     this.chase.yaw = 0;
     this.chase.pitch = 0;
+    this.chase.down = null;
   }
 
+  /** V: cockpit → third person → chase → cockpit. */
   toggleView() {
-    this.setView(this.view === 'cockpit' ? 'chase' : 'cockpit');
+    const order = ['cockpit', 'third', 'chase'];
+    this.setView(order[(order.indexOf(this.view) + 1) % order.length]);
     return this.view;
   }
 
@@ -104,6 +116,7 @@ export class PilotMode {
     this.view = 'cockpit';
     this.flight.overdrive = false;
     this.worldCam.layers.enable(Saucer.LAYER);
+    this.fisheye = 0;
     const cam = this.engine.camera;
     cam.fov = BASE_FOV;
     cam.updateProjectionMatrix();
@@ -174,11 +187,14 @@ export class PilotMode {
     const W = this.warp;
     const warping = W.state === 'spool' || W.state === 'jump';
     const m = controls.takeMouse();
+    this.wheel = m.wheel;
     const chase = this.view === 'chase';
-    const freeLook = controls.rightDown || warping || (F.landed && !chase);
+    const third = this.view === 'third';
+    const outside = chase || third;
+    const freeLook = controls.rightDown || warping || (F.landed && !outside);
     const C = this.chase;
-    if (freeLook && chase) {
-      // orbit the chase camera round the craft
+    if (freeLook && outside) {
+      // orbit the outside camera round the craft
       C.yaw = MathUtils.clamp(C.yaw - m.dx * SENS, -Math.PI, Math.PI);
       C.pitch = MathUtils.clamp(C.pitch - m.dy * SENS, -0.9, 1.0);
     } else if (freeLook) {
@@ -189,12 +205,15 @@ export class PilotMode {
       F.yaw(m.dx * SENS);
       if (!F.landed) F.steer(-m.dy * SENS);
       this.headYaw = MathUtils.damp(this.headYaw, 0, 4, dt);
-      F.pitch = MathUtils.damp(F.pitch, HEAD_REST, 4, dt);
+      F.pitch = MathUtils.damp(F.pitch, this.headRest, 4, dt);
       C.yaw = MathUtils.damp(C.yaw, 0, 2, dt);
       C.pitch = MathUtils.damp(C.pitch, 0, 2, dt);
     }
     if (!F.landed) F.steer(controls.axis('ArrowDown', 'ArrowUp') * dt * 0.9);
-    if (m.wheel && chase) C.dist = MathUtils.clamp(C.dist * (1 + m.wheel * 0.1), 14, 120);
+    if (m.wheel && this.wheelZoom) {
+      if (chase) C.dist = MathUtils.clamp(C.dist * (1 + m.wheel * 0.1), 14, 120);
+      else if (third) this.third.dist = MathUtils.clamp(this.third.dist * (1 + m.wheel * 0.1), 12, 80);
+    }
 
     const locked = this.leaving || warping;
     I.forward = locked ? 0 : controls.axis('KeyS', 'KeyW');
@@ -259,7 +278,12 @@ export class PilotMode {
     const cam = this.engine.camera;
     const od = F.overdrive && !F.inside;
     this.fovKick = MathUtils.damp(this.fovKick, od ? MathUtils.clamp(Math.log10(1 + F.speed / 340) * 7, 0, 14) : 0, 2.5, dt);
-    const fov = (chase ? CHASE_FOV : BASE_FOV) + this.fovKick + W.fx.fov;
+    // Fisheye: a touch on the ground, more in flight and with speed. The grade magnifies
+    // the middle by (1 + k·rc²), so the render's field widens by as much to keep its scale.
+    this.fisheye = MathUtils.damp(this.fisheye, F.landed ? 0.05 : 0.13 + MathUtils.clamp(F.speed / 400, 0, 1) * 0.05, 2, dt);
+    const rc2 = 0.25 * (cam.aspect * cam.aspect + 1);
+    const fov0 = (chase ? CHASE_FOV : BASE_FOV) + this.fovKick + W.fx.fov;
+    const fov = MathUtils.radToDeg(2 * Math.atan(Math.tan(MathUtils.degToRad(fov0) / 2) * (1 + this.fisheye * rc2)));
     if (Math.abs(cam.fov - fov) > 1e-3) {
       cam.fov = fov;
       cam.updateProjectionMatrix();
@@ -277,13 +301,14 @@ export class PilotMode {
     // World camera = saucer × eye, or the chase rig.
     const wc = this.worldCam;
     if (chase) this._chaseCam(dt, F, shake);
+    else if (third) this._thirdCam(dt, F, shake);
     else {
       wc.position.copy(this.eye).applyMatrix4(S.group.matrixWorld);
       wc.quaternion.copy(F.quat).multiply(_qh);
     }
     wc.fov = cam.fov;
     const agl = Math.max(1, F.agl);
-    wc.near = chase ? MathUtils.clamp(agl * 0.004, 0.3, 4) : MathUtils.clamp(agl * 0.004, 0.4, 40);
+    wc.near = outside ? MathUtils.clamp(agl * 0.004, 0.3, 4) : MathUtils.clamp(agl * 0.004, 0.4, 40);
     wc.far = Math.max(2e5, Math.sqrt(2 * 6371e3 * agl + agl * agl) * 3 + 4e5);
     wc.updateProjectionMatrix();
     wc.updateMatrixWorld();
@@ -322,6 +347,32 @@ export class PilotMode {
     _m.lookAt(wc.position, _v.copy(F.pos).addScaledVector(_U, 2.2 - C.dist * 0.04), _U);
     wc.quaternion.setFromRotationMatrix(_m);
     if (shake > 1e-5) wc.quaternion.multiply(target.setFromEuler(_e.set(Math.sin(performance.now() * 0.061) * shake, Math.sin(performance.now() * 0.048) * shake, 0)));
+  }
+
+  /**
+   * Third person: over the craft's shoulder — behind it and a little above, on
+   * the line the nose points along, looking the same way, so the crosshair is
+   * still where the shots go. Right drag swings it round; it trails a little
+   * further back with speed and never goes below the ground.
+   */
+  _thirdCam(dt, F, shake) {
+    const C = this.chase;
+    const T = this.third;
+    const wc = this.worldCam;
+    this.frame.enuAt(F.pos, _E, _N, _U);
+    const h = F.heading + this.headYaw + C.yaw;
+    const pitch = MathUtils.clamp(F.attitude + F.pitch - this.headRest + C.pitch, -1.3, 1.3);
+    const fwd = _v.copy(_E).multiplyScalar(Math.sin(h)).addScaledVector(_N, Math.cos(h));
+    const dir = _p.copy(fwd).multiplyScalar(Math.cos(pitch)).addScaledVector(_U, Math.sin(pitch));
+    const up = _up.copy(fwd).multiplyScalar(-Math.sin(pitch)).addScaledVector(_U, Math.cos(pitch));
+    // (a short boom under the hangar roof, or it ends up in the back wall)
+    T.d = MathUtils.damp(T.d, F.inside ? Math.min(T.dist, 11) : T.dist + Math.min(8, F.speed * 0.015), 3, dt);
+    wc.position.copy(F.pos).addScaledVector(_U, SAUCER.halfHeight).addScaledVector(dir, -T.d).addScaledVector(up, T.height);
+    const camAgl = F.agl + SAUCER.halfHeight - dir.dot(_U) * T.d + up.dot(_U) * T.height;
+    if (camAgl < 2.5) wc.position.addScaledVector(_U, 2.5 - camAgl);
+    _m.lookAt(wc.position, _v.copy(wc.position).add(dir), _U);
+    wc.quaternion.setFromRotationMatrix(_m);
+    if (shake > 1e-5) wc.quaternion.multiply(_qs.setFromEuler(_e.set(Math.sin(performance.now() * 0.061) * shake, Math.sin(performance.now() * 0.048) * shake, 0)));
   }
 
   /** Light pool on the ground under the belly. */

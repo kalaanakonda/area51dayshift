@@ -15,6 +15,7 @@ export class Controls {
     this.locked = false;
     this.dragging = false;
     this.rightDown = false;
+    this.leftDown = false; // the trigger in a deathmatch
     this.enabled = true;
     this.lockWanted = true;
     this.listeners = new Set();
@@ -34,18 +35,20 @@ export class Controls {
       this.keys.clear();
       this.dragging = false;
       this.rightDown = false;
+      this.leftDown = false;
     });
 
     canvas.addEventListener('pointerdown', (e) => {
       if (e.button === 2) this.rightDown = true;
       if (e.button !== 0) return;
+      this.leftDown = true;
       if (!this.locked && this.lockWanted && this.enabled) this.lock();
       this.dragging = true;
       this._last = { x: e.clientX, y: e.clientY };
     });
     window.addEventListener('pointerup', (e) => {
       if (e.button === 2) this.rightDown = false;
-      if (e.button === 0) this.dragging = false;
+      if (e.button === 0) this.dragging = this.leftDown = false;
     });
     window.addEventListener('pointermove', (e) => {
       if (!this.enabled) return;

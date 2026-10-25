@@ -19,8 +19,12 @@ import { WarpEffect } from './render/WarpEffect.js';
 import { AOEffect } from '../render/passes/AOEffect.js';
 import { HOME, Shift, WAYPOINTS } from './missions.js';
 import { Soundscape } from './audio.js';
+import { Deathmatch } from './deathmatch/Deathmatch.js';
 
 const params = new URLSearchParams(location.search);
+// ?dm — the deathmatch over Nuremberg instead of the shift (same craft, same Earth)
+const DM = params.has('dm');
+const html = String.raw;
 const canvas = document.getElementById('stage');
 const engine = new Engine(canvas, { logDepth: true, near: 0.02, far: 80, grade: 'a51' });
 engine.camera.fov = 66;
@@ -168,10 +172,13 @@ const pilotLoaded = pilot.load();
 
 const crew = new Crew(assets, hangar);
 hangar.group.add(crew.group);
-const crewLoaded = crew.load().then((ok) => {
-  if (!ok) return;
-  crew.group.traverse((o) => o.isMesh && o.layers.enable(LAYER_CASTERS));
-});
+// (nobody to meet on the hangar floor in a deathmatch: skip the people)
+const crewLoaded = DM
+  ? Promise.resolve(false)
+  : crew.load().then((ok) => {
+      if (!ok) return;
+      crew.group.traverse((o) => o.isMesh && o.layers.enable(LAYER_CASTERS));
+    });
 
 // --- warm-up -----------------------------------------------------------------------------------
 // Behind the start card: load the people, compile every shader (hangar, outside,
@@ -243,7 +250,7 @@ let saucerEnv = null;
 // --- ground under the site --------------------------------------------------------------
 // Sample the streamed ground under the footprint and seat the floor on it.
 let siteCam = null;
-if (earth.mode === 'google') {
+if (earth.mode === 'google' && !DM) {
   // A helper camera looking straight down keeps the tiles under the hangar sharp for the raycast.
   siteCam = new THREE.PerspectiveCamera(70, 1, 1, 6000);
   siteCam.position.set(hangar.group.position.x, 320, hangar.group.position.z);
@@ -286,7 +293,8 @@ walker.colliders.push(saucerCollider);
 walker.onFootstep = (amp, side) => sound.footstep(amp, side);
 
 const shift = new Shift();
-const state = { mode: params.has('fly') ? 'fly' : 'walk', t: 0, started: false };
+const state = { mode: DM ? 'dm' : params.has('fly') ? 'fly' : 'walk', t: 0, started: false };
+const dm = DM ? new Deathmatch({ engine, world, worldCam, frame, earth, pilot, saucer, hud, sound, controls, atmo, atmoU, floorAt, onLeave: () => switchMode(false) }) : null;
 const fly = { pos: new THREE.Vector3(0, 30, 0), heading: SITE.doorAzimuth, pitch: -5 };
 
 const tmpV = new THREE.Vector3();
@@ -404,8 +412,16 @@ function start() {
   sound.start();
   if (!state.started) {
     state.started = true;
-    hud.toast(`Clocked in · ${live.clock.slice(0, 5)} PDT`, 'good');
+    if (dm) dm.launch();
+    else hud.toast(`Clocked in · ${live.clock.slice(0, 5)} PDT`, 'good');
   }
+}
+
+/** Swap between the shift and the deathmatch (a reload: the two set up different worlds). */
+function switchMode(toDm) {
+  const keep = [...params].filter(([k]) => !['dm', 'fly', 'seat'].includes(k)).map(([k, v]) => (v ? `${k}=${encodeURIComponent(v)}` : k));
+  if (toDm) keep.unshift('dm');
+  location.href = `${location.pathname}${keep.length ? `?${keep.join('&')}` : ''}`;
 }
 
 function openMap() {
@@ -447,7 +463,9 @@ function engageWarp(dest) {
 
 controls.onLockChange = (locked) => {
   if (!locked && state.started && !hud.overlayOpen && !worldMap.isOpen) {
-    hud.showOverlay({ title: 'Paused', lede: 'The shift clock is still running. Take your time.', button: 'Resume', onGo: start });
+    if (dm) {
+      if (dm.pausable) hud.showOverlay({ title: 'Paused', lede: 'The fight holds its breath until you come back.', button: 'Resume', onGo: start, alt: { label: 'Leave the deathmatch', onClick: () => dm.leave() } });
+    } else hud.showOverlay({ title: 'Paused', lede: 'The shift clock is still running. Take your time.', button: 'Resume', onGo: start });
   }
 };
 
@@ -459,6 +477,10 @@ controls.onKey((code) => {
     return;
   }
   if (hud.overlayOpen || transition) return;
+  if (dm) {
+    dm.onKey(code);
+    return;
+  }
   if (code === 'Backquote' && state.mode !== 'pilot') state.mode = state.mode === 'fly' ? 'walk' : 'fly';
   if (code === 'KeyN') shift.cycleWaypoint(1);
   if (code === 'KeyM') openMap();
@@ -474,8 +496,8 @@ controls.onKey((code) => {
     }
     if (code === 'KeyV') {
       const v = pilot.toggleView();
-      engine.setStage({ far: world, farCamera: worldCam, near: v === 'chase' ? null : pilot.cockpit.scene });
-      hud.toast(v === 'chase' ? 'Chase camera · V for the cockpit · wheel to zoom' : 'Cockpit view', 'info');
+      engine.setStage({ far: world, farCamera: worldCam, near: v === 'cockpit' ? pilot.cockpit.scene : null });
+      hud.toast(v === 'third' ? 'Third person · right drag to look around · wheel to zoom' : v === 'chase' ? 'Chase camera · V for the cockpit · wheel to zoom' : 'Cockpit view', 'info');
     }
     if (code === 'KeyQ') {
       const r = pilot.toggleOverdrive();
@@ -529,8 +551,45 @@ hud.setEarth(
     : 'Earth · Esri World Imagery on AWS terrain. Add VITE_GOOGLE_MAPS_API_KEY to .env.local for Google’s photorealistic 3D cities.',
   earth.mode === 'google'
 );
-hud.showOverlay({ title: 'Day Shift', button: 'Clock in', onGo: () => warm.ready && start() });
-hud.setGo('Preparing the shift · 0%', false, 0);
+if (dm) {
+  hud.setIntro({
+    classif: 'TOP SECRET // S-4 // ARV PROGRAM // LIVE FIRE EXERCISE',
+    kicker: 'Nuremberg, Franconia · 49.45°N 11.08°E · dawn, 14 April 1561 — again',
+    lede: 'The townspeople saw globes, crosses and tubes fight in the sky over the old town for an hour. Now a hundred craft teleport in over the same roofs: everyone against everyone, most kills in six minutes (or first to 25) wins.',
+    cards: html`
+      <div class="card">
+        <h3>Weapons · click to fire</h3>
+        <dl>
+          <dt>1 Laser</dt><dd>Long reach, hits instantly · overheats</dd>
+          <dt>2 Plasma</dt><dd>Point-blank burst · brutal up close</dd>
+          <dt>3 Seekers</dt><dd>Hold a craft in the circle to lock · they follow it</dd>
+          <dt>4 Fire</dt><dd>Short cone · keeps them burning</dd>
+          <dt>5 Arc</dt><dd>Lightning that jumps craft to craft · stuns</dd>
+          <dt>6 Cannon</dt><dd>Tracers that drop and drift with the wind</dd>
+          <dt>Wheel</dt><dd>Next / previous weapon</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Flying</h3>
+        <dl>
+          <dt>Mouse</dt><dd>Turn and pitch the nose · aim</dd>
+          <dt>W S · A D</dt><dd>Thrust where the nose points · slide</dd>
+          <dt>Space · C</dt><dd>Climb · descend</dd>
+          <dt>Shift</dt><dd>Boost</dd>
+          <dt>Q</dt><dd>Overdrive · a Mach 3 dash, no inertia</dd>
+          <dt>V</dt><dd>Cockpit · third person · chase camera</dd>
+          <dt>Right drag</dt><dd>Look around</dd>
+          <dt>Tab</dt><dd>Standings</dd>
+          <dt>Space</dt><dd>Skip the intro · teleport back in when down</dd>
+        </dl>
+      </div>`,
+  });
+  hud.showOverlay({ title: 'Deathmatch', button: 'Launch', onGo: () => warm.ready && start(), alt: { label: 'Back to Day Shift', onClick: () => switchMode(false) } });
+  hud.setGo('Preparing the battle · 0%', false, 0);
+} else {
+  hud.showOverlay({ title: 'Day Shift', button: 'Clock in', onGo: () => warm.ready && start(), alt: { label: 'Deathmatch · Nuremberg', onClick: () => switchMode(true) } });
+  hud.setGo('Preparing the shift · 0%', false, 0);
+}
 
 engine.addUpdater((dt, t) => {
   state.t += dt;
@@ -546,7 +605,10 @@ engine.addUpdater((dt, t) => {
     if (paused) controls.takeMouse();
     pilot.update(dt, t, controls, floorAt);
     if (pilot.leaving && pilot.ramp >= 0.999) climbOut();
-  } else updateWalk(dt);
+  } else if (dm) dm.update(dt, t, paused);
+  else updateWalk(dt);
+  // in the craft's seat (the shift's pilot mode, or flying in the deathmatch)
+  const seated = state.mode === 'pilot' || !!dm?.flying;
 
   const c = frame.cartographic(worldCam.position, {});
   frame.ellipsoid.getCartographicToPosition(c.lat, c.lon, 0, surf);
@@ -581,15 +643,16 @@ engine.addUpdater((dt, t) => {
     saucerEnv = wantEnv;
     saucer.setEnvMap(wantEnv);
   }
-  if (state.mode === 'pilot') pilot.light({ sunWorld, atmo, outside: 1 - inside01, env: wantEnv, sunIntensity: SUN_IRRADIANCE });
+  if (seated) pilot.light({ sunWorld, atmo, outside: 1 - inside01, env: wantEnv, sunIntensity: SUN_IRRADIANCE });
 
   earth.update();
-  crew.update(dt, state.mode === 'walk' ? walker.pos : null);
-  if (state.mode !== 'pilot') saucer.update(dt, t);
+  if (!dm) {
+    crew.update(dt, state.mode === 'walk' ? walker.pos : null);
+    if (state.mode !== 'pilot') saucer.update(dt, t);
+  }
 
   // where are we (the craft when seated, else your eyes)
   const F = pilot.flight;
-  const seated = state.mode === 'pilot';
   const here = seated ? F.carto : c;
   const lat = here.lat / DEG;
   const lon = here.lon / DEG;
@@ -601,18 +664,20 @@ engine.addUpdater((dt, t) => {
   else if (state.mode === 'fly') agl = c.height - (earth.groundHeight(worldCam.position, c) ?? c.height);
   const home = greatCircle(here.lat, here.lon, HOME.lat * DEG, HOME.lon * DEG);
 
-  // the shift
+  // the shift (or the deathmatch's tally)
   const sl = hangar.group.worldToLocal(footL.copy(F.pos));
-  const objective = shift.update({
-    mode: state.mode,
-    power: pilot.power,
-    landed: F.landed,
-    outsideHangar: seated && (Math.abs(sl.x) > HANGAR.W / 2 + 4 || Math.abs(sl.z) > HANGAR.D / 2 + 4 || sl.y > HANGAR.H + 2),
-    insideHangar: seated && Math.abs(sl.x) < HANGAR.W / 2 - 4 && Math.abs(sl.z) < HANGAR.D / 2 - 4 && sl.y < 4,
-    lat,
-    lon,
-    agl,
-  });
+  const objective = dm
+    ? dm.objective()
+    : shift.update({
+        mode: state.mode,
+        power: pilot.power,
+        landed: F.landed,
+        outsideHangar: seated && (Math.abs(sl.x) > HANGAR.W / 2 + 4 || Math.abs(sl.z) > HANGAR.D / 2 + 4 || sl.y > HANGAR.H + 2),
+        insideHangar: seated && Math.abs(sl.x) < HANGAR.W / 2 - 4 && Math.abs(sl.z) < HANGAR.D / 2 - 4 && sl.y < 4,
+        lat,
+        lon,
+        agl,
+      });
   for (const e of shift.events.splice(0)) {
     hud.toast(e.text, e.type === 'step' || e.type === 'waypoint' ? 'info' : 'good');
     sound.play(e.type === 'complete' ? 'chime' : e.type === 'waypoint' ? 'beep' : 'confirm', { gain: 0.45, verb: 0.15 });
@@ -671,11 +736,13 @@ engine.addUpdater((dt, t) => {
   // Overdrive glass on the sides of the frame: fbm warp, barrel, fringing — grows with Mach
   lensOD = THREE.MathUtils.damp(lensOD, overdrive ? 0.6 + THREE.MathUtils.clamp(Math.log10(1 + F.mach) / 2, 0, 0.4) : 0, 3, dt);
   engine.post.grade.uLens.value = lensOD < 0.002 ? 0 : lensOD;
+  // the flight camera's slight fisheye (PilotMode widens its field to match)
+  engine.post.grade.uFisheye.value = seated ? pilot.fisheye : 0;
   // AO: a room-scale radius indoors; outside it widens with distance so streets and courtyards read too
   aoWorld.set(inside01 > 0.5 ? { radius: 1.6, grow: 0, intensity: 1.8, maxDist: 120 } : { radius: 1.4, grow: 0.012, intensity: 0.55, maxDist: 6000 });
   buildings.update(dt, { lat, lon, agl: Math.max(0, agl), speed: seated ? F.speed : 0, busy: seated && W.active, dest: seated && W.active ? W.dest : null });
   engine.post.grade.uFlash.value = W.fx.flash * 0.85;
-  if (seated && pilot.power >= 1 && !poweredUp) {
+  if (!dm && seated && pilot.power >= 1 && !poweredUp) {
     poweredUp = true;
     hud.toast('Drive online', 'good');
     sound.play('confirm', { gain: 0.4, verb: 0.1 });
@@ -684,7 +751,8 @@ engine.addUpdater((dt, t) => {
   // prompts
   let prompt = null;
   ui.canBoard = false;
-  if (state.mode === 'walk' && !transition) {
+  if (dm) prompt = dm.prompt;
+  else if (state.mode === 'walk' && !transition) {
     rampFootLocal(footL);
     const d = Math.hypot(walker.pos.x - footL.x, walker.pos.z - footL.z);
     ui.canBoard = d < 2.0 && saucer.ramp > 0.95;
@@ -724,7 +792,7 @@ engine.addUpdater((dt, t) => {
     live.speed = F.speed * 3.6;
     live.status = F.landed ? (pilot.power > 0.05 ? 'ENGAGED' : 'PARKED') : 'AIRBORNE';
   }
-  hangar.update(dt, t, live);
+  if (!dm) hangar.update(dt, t, live);
 
   if (seated) {
     Object.assign(cockpitLive, {
@@ -757,7 +825,7 @@ engine.addUpdater((dt, t) => {
   }
 
   hud.update(dt, {
-    mode: state.mode,
+    mode: dm ? (seated ? 'pilot' : 'dm') : state.mode,
     clock: live.clock,
     lat,
     lon,
@@ -794,7 +862,8 @@ engine.addUpdater((dt, t) => {
   engine.post.sun.intensity = 0.2 * Math.max(0, Math.min(1, atmo.sunMu * 5 + 0.5));
 
   // seat the hangar on the streamed ground, then bake the interior reflections
-  if (snap.i < snap.at.length && state.t > snap.at[snap.i]) {
+  // (the deathmatch is 9,000 km from the hangar: none of that)
+  if (!dm && snap.i < snap.at.length && state.t > snap.at[snap.i]) {
     snap.i++;
     if (snapHangar()) snap.stable++;
     if ((snap.stable >= 2 || snap.i >= snap.at.length) && siteCam) {
@@ -802,39 +871,45 @@ engine.addUpdater((dt, t) => {
       siteCam = null;
     }
   }
-  if (baked === 0 && state.t > 1.5) {
+  if (!dm && baked === 0 && state.t > 1.5) {
     bakeInterior();
     baked = 1;
-  } else if (baked === 1 && (state.t > 12 || (state.t > 4 && earth.loading < 12 && snap.stable > 0))) {
+  } else if (!dm && baked === 1 && (state.t > 12 || (state.t > 4 && earth.loading < 12 && snap.stable > 0))) {
     bakeInterior();
     baked = 2;
   }
   if (!warm.ready && !state.started) {
-    const steps = [
-      [warm.assets, 0.2],
-      [warm.compiled, 0.25],
-      [snap.stable > 0 || snap.i >= snap.at.length, 0.15],
-      [!siteGround || siteGround.passes > 0, 0.1],
-      [baked >= 2, 0.1],
-      [Math.max(0, 1 - earth.loading / 150), 0.2],
-    ];
+    const steps = dm
+      ? [
+          [warm.assets, 0.15],
+          [warm.compiled, 0.2],
+          [dm.progress(), 0.65],
+        ]
+      : [
+          [warm.assets, 0.2],
+          [warm.compiled, 0.25],
+          [snap.stable > 0 || snap.i >= snap.at.length, 0.15],
+          [!siteGround || siteGround.passes > 0, 0.1],
+          [baked >= 2, 0.1],
+          [Math.max(0, 1 - earth.loading / 150), 0.2],
+        ];
     let p = 0;
     for (const [v, w] of steps) p += (v === true ? 1 : v === false ? 0 : v) * w;
-    if (p > 0.985 || (state.t > 45 && warm.compiled)) {
+    if (p > (dm ? 0.97 : 0.985) || (state.t > (dm ? 40 : 45) && warm.compiled)) {
       warm.ready = true;
-      hud.setGo('Clock in', true);
-    } else hud.setGo(`Preparing the shift · ${Math.floor(p * 100)}%`, false, p);
+      hud.setGo(dm ? 'Launch' : 'Clock in', true);
+    } else hud.setGo(`${dm ? 'Preparing the battle' : 'Preparing the shift'} · ${Math.floor(p * 100)}%`, false, p);
   }
   controls.endFrame();
 });
 
 // ?seat — start in the cockpit (handy while working on the flight side)
-if (params.has('seat')) {
+if (params.has('seat') && !dm) {
   pilot.board();
   state.mode = 'pilot';
   saucerOnPad = false;
   engine.setStage({ far: world, farCamera: worldCam, near: pilot.cockpit.scene });
 }
 
-window.__a51 = { engine, autoRes, siteGround, warm, snap, aoWorld, aoCockpit, earth, atmo, frame, clock, worldCam, world, hangar, saucer, crew, walker, state, fly, sun, pilot, shift, hud, sound, worldMap, warpFx, buildings, openMap, closeMap, engageWarp, bakeInterior, board, climbOut, snapHangar };
+window.__a51 = { engine, autoRes, siteGround, warm, snap, aoWorld, aoCockpit, earth, atmo, frame, clock, worldCam, world, hangar, saucer, crew, walker, state, fly, sun, pilot, shift, hud, sound, worldMap, warpFx, buildings, dm, openMap, closeMap, engageWarp, bakeInterior, board, climbOut, snapHangar };
 engine.start();

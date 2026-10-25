@@ -717,6 +717,17 @@ body {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
 }
+#hud .ov .alt {
+  margin-left: auto;
+  color: var(--amber);
+  border-color: rgba(255, 191, 94, 0.4);
+}
+#hud .ov .alt:hover {
+  border-color: rgba(255, 191, 94, 0.8);
+}
+#hud .ov .alt[hidden] {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
   #hud .air .mode span[data-state='OVERDRIVE'] {
     animation: none;
